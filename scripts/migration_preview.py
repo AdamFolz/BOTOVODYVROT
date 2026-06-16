@@ -14,8 +14,8 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from build_v2_seed import build_v2_seed, read_v1_export
-from export_v1 import export_database
+from build_v2_seed import SeedError, build_v2_seed, read_v1_export
+from export_v1 import ExportError, export_database
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -51,22 +51,34 @@ def main(argv: Iterable[str] | None = None) -> int:
     export_path = Path(args.export_out)
     seed_path = Path(args.seed_out)
 
-    print("Step 1/2: exporting v1 SQLite to JSONL...")
-    export_counts = export_database(
-        db_path=db_path,
-        out_path=export_path,
-        allow_missing_tables=bool(args.allow_missing_tables),
-    )
-    print(f"Export written: {export_path}")
-    for table, count in sorted(export_counts.items()):
-        print(f"- v1 {table}: {count}")
+    try:
+        print("Step 1/2: exporting v1 SQLite to JSONL...")
+        export_counts = export_database(
+            db_path=db_path,
+            out_path=export_path,
+            allow_missing_tables=bool(args.allow_missing_tables),
+        )
+        print(f"Export written: {export_path}")
+        for table, count in sorted(export_counts.items()):
+            print(f"- v1 {table}: {count}")
 
-    print("\nStep 2/2: building v2 seed JSONL...")
-    tables = read_v1_export(export_path)
-    seed_counts = build_v2_seed(tables, export_path, seed_path)
-    print(f"Seed written: {seed_path}")
-    for entity, count in sorted(seed_counts.items()):
-        print(f"- v2 {entity}: {count}")
+        print("\nStep 2/2: building v2 seed JSONL...")
+        tables = read_v1_export(export_path)
+        seed_counts = build_v2_seed(tables, export_path, seed_path)
+        print(f"Seed written: {seed_path}")
+        for entity, count in sorted(seed_counts.items()):
+            print(f"- v2 {entity}: {count}")
+    except ExportError as exc:
+        print(f"Migration preview failed: {exc}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Что делать:", file=sys.stderr)
+        print("1. Если бот ещё ни разу не запускался, сначала создай .env и запусти python bot.py.", file=sys.stderr)
+        print("2. Если база лежит в другом месте, передай путь: python scripts/migration_preview.py --db path/to/db.sqlite3", file=sys.stderr)
+        print("3. Если база задана в .env как DATABASE_PATH, используй этот путь в --db.", file=sys.stderr)
+        return 2
+    except SeedError as exc:
+        print(f"Seed build failed: {exc}", file=sys.stderr)
+        return 3
 
     print("\nDone. These files are local/private and are ignored by git:")
     print(f"- {export_path}")

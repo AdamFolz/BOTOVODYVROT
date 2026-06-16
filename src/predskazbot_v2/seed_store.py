@@ -30,31 +30,36 @@ class SeedStore:
 
     @classmethod
     def from_jsonl(cls, path: str | Path) -> "SeedStore":
-        seed_path = Path(path)
-        if not seed_path.exists():
-            raise SeedStoreError(f"v2 seed file does not exist: {seed_path}")
+        return cls.from_jsonl_paths([path])
 
+    @classmethod
+    def from_jsonl_paths(cls, paths: list[str | Path]) -> "SeedStore":
         records_by_entity: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        with seed_path.open("r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    record = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise SeedStoreError(f"Invalid JSON on line {line_number}: {exc}") from exc
+        existing_paths = [Path(path) for path in paths if Path(path).exists()]
+        if not existing_paths:
+            raise SeedStoreError("no v2 seed/live JSONL files exist")
 
-                if record.get("record_type") == "v2_seed_metadata":
-                    continue
-                if record.get("record_type") != "v2_seed_row":
-                    raise SeedStoreError(f"Unsupported seed record on line {line_number}")
+        for seed_path in existing_paths:
+            with seed_path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        record = json.loads(stripped)
+                    except json.JSONDecodeError as exc:
+                        raise SeedStoreError(f"Invalid JSON in {seed_path} on line {line_number}: {exc}") from exc
 
-                entity = str(record.get("entity", ""))
-                data = record.get("data")
-                if not entity or not isinstance(data, dict):
-                    raise SeedStoreError(f"Malformed seed row on line {line_number}")
-                records_by_entity[entity].append(data)
+                    if record.get("record_type") == "v2_seed_metadata":
+                        continue
+                    if record.get("record_type") != "v2_seed_row":
+                        raise SeedStoreError(f"Unsupported seed record in {seed_path} on line {line_number}")
+
+                    entity = str(record.get("entity", ""))
+                    data = record.get("data")
+                    if not entity or not isinstance(data, dict):
+                        raise SeedStoreError(f"Malformed seed row in {seed_path} on line {line_number}")
+                    records_by_entity[entity].append(data)
 
         return cls(dict(records_by_entity))
 

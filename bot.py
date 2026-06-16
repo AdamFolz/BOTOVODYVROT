@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import os
 import time
 from collections import defaultdict
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AuthenticationError
 from telegram import Update
 from telegram.constants import ChatType
 from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut
@@ -269,6 +270,10 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 {"role": "user", "content": SUMMARY_PROMPT.format(context=context_text)},
             ],
         )
+    except AuthenticationError:
+        logger.error("Summary generation failed: invalid OPENAI_API_KEY")
+        await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.")
+        return
     except Exception:
         logger.exception("Summary generation failed")
         await safe_send(update, "Летопись не сложилась. Попробуй позже.")
@@ -341,6 +346,10 @@ async def future(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             last_reason = reason
             chosen = candidate
 
+    except AuthenticationError:
+        logger.error("Future generation failed: invalid OPENAI_API_KEY")
+        await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.", max_len=1000)
+        return
     except Exception:
         logger.exception("Future generation failed")
         await safe_send(update, "Оракул завис. Попробуй позже.", max_len=1000)
@@ -390,9 +399,34 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     try:
+        memory_manager.record_v2_message(
+            chat_id=chat_id,
+            user_id=user_id,
+            username=username,
+            display_name=display_name,
+            text=text,
+            mentions=mentions,
+        )
+    except Exception:
+        logger.exception("Failed to save incoming message to v2 live event log")
+
+    try:
         await memory_manager.maybe_update_memory(chat_id)
     except Exception:
         logger.exception("Memory update failed")
+
+
+def ensure_event_loop() -> None:
+    """Create a main-thread asyncio event loop when Python does not provide one.
+
+    Python 3.14 no longer guarantees that asyncio.get_event_loop() returns a
+    default loop. python-telegram-bot still expects one during run_polling(), so
+    Windows/local runs need an explicit loop before Application starts polling.
+    """
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 def validate_env() -> None:
@@ -402,11 +436,16 @@ def validate_env() -> None:
     if not OPENAI_API_KEY:
         missing.append("OPENAI_API_KEY")
     if missing:
-        raise RuntimeError("Missing env variables: " + ", ".join(missing))
+        raise RuntimeError(
+            "Missing env variables: "
+            + ", ".join(missing)
+            + ". Create .env from .env.example and fill the tokens."
+        )
 
 
 def main() -> None:
     validate_env()
+    ensure_event_loop()
     db.init()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
