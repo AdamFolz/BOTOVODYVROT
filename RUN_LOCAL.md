@@ -102,3 +102,25 @@ python bot.py
 /profile
 /summary
 ```
+
+## 10. Экспорт памяти v1 перед rewrite
+
+Перед переходом на v2 сделай JSONL-снимок текущей SQLite-базы. Это безопасный первый шаг миграции: v1 продолжает работать, а v2 сможет импортировать историю, профили, лор и ручные воспоминания из файла.
+
+```bash
+python scripts/export_v1.py --db predskazbot.sqlite3 --out exports/v1-export.jsonl
+```
+
+Если база старая или частично пустая и в ней нет всех таблиц v1, можно сделать частичный экспорт:
+
+```bash
+python scripts/export_v1.py --db predskazbot.sqlite3 --out exports/v1-export.jsonl --allow-missing-tables
+```
+
+## 11. Подготовь v2 seed из v1 export
+
+После экспорта можно локально сконвертировать v1 JSONL в v2-shaped seed JSONL. Для этого PostgreSQL пока не нужен: файл нужен, чтобы проверить будущую миграцию до подключения реальной v2 базы.
+
+```bash
+python scripts/build_v2_seed.py --in exports/v1-export.jsonl --out exports/v2-seed.jsonl
+```
