@@ -1,13 +1,23 @@
 import json
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AuthenticationError
 
 from database import Database
 from prompts import MEMORY_CURATOR_PROMPT
 from utils import safe_short
+
+SRC_PATH = Path(__file__).resolve().parent / "src"
+if SRC_PATH.exists() and str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
+from predskazbot_v2 import SeedStore
+from predskazbot_v2.live_event_log import LiveEventLog
+from predskazbot_v2.retrieval import build_lore_context, build_profile_context
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +28,51 @@ class MemoryManager:
         self.db = db
         self.client = openai_client
         self.model = model
+        self.v2_enabled = os.getenv("V2_MEMORY_ENABLED", "1") == "1"
+        self.v2_seed_path = Path(os.getenv("V2_SEED_PATH", "exports/v2-seed.jsonl"))
+        self.v2_live_events_path = Path(os.getenv("V2_LIVE_EVENTS_PATH", "exports/v2-live-events.jsonl"))
+        self.llm_disabled_reason: str | None = None
+
+    def load_v2_seed_store(self) -> SeedStore | None:
+        if not self.v2_enabled:
+            return None
+        paths = [self.v2_seed_path, self.v2_live_events_path]
+        if not any(path.exists() for path in paths):
+            return None
+        return SeedStore.from_jsonl_paths(paths)
+
+    def record_v2_message(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        username: str,
+        display_name: str,
+        text: str,
+        mentions: list[str],
+    ) -> None:
+        if not self.v2_enabled:
+            return
+        LiveEventLog(self.v2_live_events_path).append_message(
+            telegram_chat_id=chat_id,
+            telegram_user_id=user_id,
+            username=username,
+            display_name=display_name,
+            text=text,
+            mentions=mentions,
+        )
+
+    def build_v2_profile_text(self, chat_id: int, user_id: int) -> str | None:
+        store = self.load_v2_seed_store()
+        if not store:
+            return None
+        return build_profile_context(store, chat_id, user_id)
+
+    def build_v2_lore_text(self, chat_id: int) -> str | None:
+        store = self.load_v2_seed_store()
+        if not store:
+            return None
+        return build_lore_context(store, chat_id)
 
     def build_context_for_user(self, chat_id: int, user_id: int, max_recent_messages: int = 80) -> str:
         profile = self.db.get_user_profile(chat_id, user_id)
@@ -29,6 +84,10 @@ class MemoryManager:
         recent_bot_responses = self.db.recent_bot_responses(chat_id, 20)
 
         blocks: list[str] = []
+
+        v2_profile = self.build_v2_profile_text(chat_id, user_id)
+        if v2_profile:
+            blocks.append("V2 MEMORY CONTEXT:\n" + v2_profile)
 
         if profile:
             blocks.append(
@@ -105,6 +164,10 @@ class MemoryManager:
 
         blocks: list[str] = []
 
+        v2_lore = self.build_v2_lore_text(chat_id)
+        if v2_lore:
+            blocks.append("V2 MEMORY CONTEXT:\n" + v2_lore)
+
         if chat_memory:
             blocks.append(
                 "ПАМЯТЬ КОНФЫ:\n"
@@ -133,6 +196,9 @@ class MemoryManager:
         return safe_short("\n\n".join(blocks), 12000)
 
     async def maybe_update_memory(self, chat_id: int) -> None:
+        if self.llm_disabled_reason:
+            return
+
         every = int(os.getenv("MEMORY_UPDATE_EVERY_MESSAGES", "40"))
         min_messages = int(os.getenv("MEMORY_MIN_MESSAGES", "20"))
 
@@ -183,6 +249,10 @@ class MemoryManager:
                     },
                 ],
             )
+        except AuthenticationError:
+            self.llm_disabled_reason = "OpenAI authentication failed: check OPENAI_API_KEY"
+            logger.error("Memory updates disabled: invalid OPENAI_API_KEY")
+            return
         except Exception:
             logger.exception("Memory update OpenAI request failed")
             return
