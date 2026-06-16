@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import os
 import time
 from collections import defaultdict
 
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AuthenticationError
 from telegram import Update
 from telegram.constants import ChatType
 from telegram.error import BadRequest, Forbidden, RetryAfter, TimedOut
@@ -25,10 +26,11 @@ logging.basicConfig(
 
 logger = logging.getLogger("predskazbot")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "predskazbot.sqlite3")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
+DATABASE_PATH = os.getenv("DATABASE_PATH", "predskazbot.sqlite3").strip()
 MAX_RECENT_MESSAGES = int(os.getenv("MAX_RECENT_MESSAGES", "80"))
 MAX_RECENT_BOT_RESPONSES = int(os.getenv("MAX_RECENT_BOT_RESPONSES", "80"))
 REGENERATION_ATTEMPTS = int(os.getenv("REGENERATION_ATTEMPTS", "3"))
@@ -37,7 +39,7 @@ FUTURE_COOLDOWN_SECONDS = int(os.getenv("FUTURE_COOLDOWN_SECONDS", "20"))
 SUMMARY_COOLDOWN_SECONDS = int(os.getenv("SUMMARY_COOLDOWN_SECONDS", "60"))
 
 db = Database(DATABASE_PATH)
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL or None)
 memory_manager = MemoryManager(db, openai_client, OPENAI_MODEL)
 
 future_rate_limit: dict[tuple[int, int], float] = defaultdict(float)
@@ -132,13 +134,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/profile @username — досье участника\n"
         "/lore — лор конфы\n"
         "/remember текст — сохранить мем/факт (только админ)\n"
-        "/summary — летопись последних событий"
+        "/summary — летопись последних событий\n"
+        "/whoami — показать user_id/chat_id/admin debug"
     )
     await safe_send(update, text)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await start(update, context)
+
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        await safe_send(update, "Не вижу chat/user в update.")
+        return
+
+    text = (
+        "Диагностика:\n"
+        f"user_id: {user.id}\n"
+        f"username: @{user.username or ''}\n"
+        f"chat_id: {chat.id}\n"
+        f"chat_type: {chat.type}\n"
+        f"ADMIN_USER_ID: {ADMIN_USER_ID}\n"
+        f"is_admin: {is_admin(update)}"
+    )
+    await safe_send(update, text)
 
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -172,6 +197,28 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await safe_send(update, "Запомнил.")
 
 
+def build_draft_profile_text(chat_id: int, user_id: int) -> str | None:
+    messages = db.recent_user_messages(chat_id, user_id, 8)
+    if not messages:
+        return None
+
+    display_name = messages[-1]["display_name"] or str(user_id)
+    username = messages[-1]["username"] or ""
+    header = f"Черновое досье: {display_name}"
+    if username:
+        header += f" (@{username})"
+
+    lines = [
+        header,
+        f"Сообщений в памяти: минимум {len(messages)}",
+        "LLM-профиль ещё не собран, но сырые сообщения уже сохраняются.",
+        "Последние реплики:",
+    ]
+    for row in messages[-5:]:
+        lines.append(f"- {safe_short(row['text'], 180)}")
+    return "\n".join(lines)
+
+
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -188,11 +235,20 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             target_user_id = int(row["user_id"])
 
+    v2_profile = memory_manager.build_v2_profile_text(chat_id, target_user_id)
+    if v2_profile:
+        await safe_send(update, v2_profile)
+        return
+
     row = db.get_user_profile(chat_id, target_user_id)
     if not row:
+        draft_profile = build_draft_profile_text(chat_id, target_user_id)
+        if draft_profile:
+            await safe_send(update, draft_profile)
+            return
         await safe_send(
             update,
-            "Досье пока пустое. Мне нужно больше сообщений, чтобы не гадать по кофейной гуще.",
+            "Досье пока пустое. Напиши несколько обычных сообщений в чат — команды не считаются.",
         )
         return
 
@@ -216,6 +272,11 @@ async def lore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     chat_id = chat_id_of(update)
+    v2_lore = memory_manager.build_v2_lore_text(chat_id)
+    if v2_lore:
+        await safe_send(update, v2_lore)
+        return
+
     row = db.get_chat_memory(chat_id)
     if not row:
         await safe_send(update, "Лор пока не сформировался. Конфе нужно совершить пару исторических ошибок.")
@@ -259,7 +320,13 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 {"role": "user", "content": SUMMARY_PROMPT.format(context=context_text)},
             ],
         )
+    except AuthenticationError:
+        summary_rate_limit[chat_id] = 0
+        logger.error("Summary generation failed: invalid OPENAI_API_KEY")
+        await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.")
+        return
     except Exception:
+        summary_rate_limit[chat_id] = 0
         logger.exception("Summary generation failed")
         await safe_send(update, "Летопись не сложилась. Попробуй позже.")
         return
@@ -331,7 +398,13 @@ async def future(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             last_reason = reason
             chosen = candidate
 
+    except AuthenticationError:
+        future_rate_limit[(chat_id, user_id)] = 0
+        logger.error("Future generation failed: invalid OPENAI_API_KEY")
+        await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.", max_len=1000)
+        return
     except Exception:
+        future_rate_limit[(chat_id, user_id)] = 0
         logger.exception("Future generation failed")
         await safe_send(update, "Оракул завис. Попробуй позже.", max_len=1000)
         return
@@ -380,9 +453,34 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     try:
+        memory_manager.record_v2_message(
+            chat_id=chat_id,
+            user_id=user_id,
+            username=username,
+            display_name=display_name,
+            text=text,
+            mentions=mentions,
+        )
+    except Exception:
+        logger.exception("Failed to save incoming message to v2 live event log")
+
+    try:
         await memory_manager.maybe_update_memory(chat_id)
     except Exception:
         logger.exception("Memory update failed")
+
+
+def ensure_event_loop() -> None:
+    """Create a main-thread asyncio event loop when Python does not provide one.
+
+    Python 3.14 no longer guarantees that asyncio.get_event_loop() returns a
+    default loop. python-telegram-bot still expects one during run_polling(), so
+    Windows/local runs need an explicit loop before Application starts polling.
+    """
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 
 def validate_env() -> None:
@@ -392,11 +490,16 @@ def validate_env() -> None:
     if not OPENAI_API_KEY:
         missing.append("OPENAI_API_KEY")
     if missing:
-        raise RuntimeError("Missing env variables: " + ", ".join(missing))
+        raise RuntimeError(
+            "Missing env variables: "
+            + ", ".join(missing)
+            + ". Create .env from .env.example and fill the tokens."
+        )
 
 
 def main() -> None:
     validate_env()
+    ensure_event_loop()
     db.init()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -408,6 +511,7 @@ def main() -> None:
     app.add_handler(CommandHandler("lore", lore))
     app.add_handler(CommandHandler("remember", remember))
     app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, store_message))
 
     logger.info("PredskazBot v1 started")
