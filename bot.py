@@ -188,6 +188,11 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             target_user_id = int(row["user_id"])
 
+    v2_profile = memory_manager.build_v2_profile_text(chat_id, target_user_id)
+    if v2_profile:
+        await safe_send(update, v2_profile)
+        return
+
     row = db.get_user_profile(chat_id, target_user_id)
     if not row:
         await safe_send(
@@ -216,6 +221,11 @@ async def lore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     chat_id = chat_id_of(update)
+    v2_lore = memory_manager.build_v2_lore_text(chat_id)
+    if v2_lore:
+        await safe_send(update, v2_lore)
+        return
+
     row = db.get_chat_memory(chat_id)
     if not row:
         await safe_send(update, "Лор пока не сформировался. Конфе нужно совершить пару исторических ошибок.")
