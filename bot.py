@@ -173,6 +173,28 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await safe_send(update, "Запомнил.")
 
 
+def build_draft_profile_text(chat_id: int, user_id: int) -> str | None:
+    messages = db.recent_user_messages(chat_id, user_id, 8)
+    if not messages:
+        return None
+
+    display_name = messages[-1]["display_name"] or str(user_id)
+    username = messages[-1]["username"] or ""
+    header = f"Черновое досье: {display_name}"
+    if username:
+        header += f" (@{username})"
+
+    lines = [
+        header,
+        f"Сообщений в памяти: минимум {len(messages)}",
+        "LLM-профиль ещё не собран, но сырые сообщения уже сохраняются.",
+        "Последние реплики:",
+    ]
+    for row in messages[-5:]:
+        lines.append(f"- {safe_short(row['text'], 180)}")
+    return "\n".join(lines)
+
+
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -196,9 +218,13 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     row = db.get_user_profile(chat_id, target_user_id)
     if not row:
+        draft_profile = build_draft_profile_text(chat_id, target_user_id)
+        if draft_profile:
+            await safe_send(update, draft_profile)
+            return
         await safe_send(
             update,
-            "Досье пока пустое. Мне нужно больше сообщений, чтобы не гадать по кофейной гуще.",
+            "Досье пока пустое. Напиши несколько обычных сообщений в чат — команды не считаются.",
         )
         return
 
@@ -271,10 +297,12 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             ],
         )
     except AuthenticationError:
+        summary_rate_limit[chat_id] = 0
         logger.error("Summary generation failed: invalid OPENAI_API_KEY")
         await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.")
         return
     except Exception:
+        summary_rate_limit[chat_id] = 0
         logger.exception("Summary generation failed")
         await safe_send(update, "Летопись не сложилась. Попробуй позже.")
         return
@@ -347,10 +375,12 @@ async def future(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chosen = candidate
 
     except AuthenticationError:
+        future_rate_limit[(chat_id, user_id)] = 0
         logger.error("Future generation failed: invalid OPENAI_API_KEY")
         await safe_send(update, "OpenAI API key неверный. Обнови OPENAI_API_KEY в .env и перезапусти бота.", max_len=1000)
         return
     except Exception:
+        future_rate_limit[(chat_id, user_id)] = 0
         logger.exception("Future generation failed")
         await safe_send(update, "Оракул завис. Попробуй позже.", max_len=1000)
         return

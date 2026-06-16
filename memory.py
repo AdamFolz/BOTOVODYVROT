@@ -66,13 +66,19 @@ class MemoryManager:
         store = self.load_v2_seed_store()
         if not store:
             return None
-        return build_profile_context(store, chat_id, user_id)
+        text = build_profile_context(store, chat_id, user_id)
+        if "не найден в v2 seed" in text:
+            return None
+        return text
 
     def build_v2_lore_text(self, chat_id: int) -> str | None:
         store = self.load_v2_seed_store()
         if not store:
             return None
-        return build_lore_context(store, chat_id)
+        text = build_lore_context(store, chat_id)
+        if "не найден в v2 seed" in text:
+            return None
+        return text
 
     def build_context_for_user(self, chat_id: int, user_id: int, max_recent_messages: int = 80) -> str:
         profile = self.db.get_user_profile(chat_id, user_id)
