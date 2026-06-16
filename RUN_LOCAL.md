@@ -124,6 +124,7 @@ python bot.py
 /lore
 /profile
 /summary
+/whoami
 ```
 
 ## 10. Экспорт памяти v1 перед rewrite
@@ -220,6 +221,17 @@ python bot.py
 После ошибки 401 memory updates временно отключаются до перезапуска, чтобы консоль не засыпало traceback-ами.
 
 
+### Безопасно проверить OpenAI key локально
+
+Не отправляй API key в чат. Проверяй его только локально:
+
+```powershell
+python scripts/check_openai_key.py
+```
+
+Скрипт замаскирует ключ, попробует обратиться к OpenAI и скажет, валидный он или нет.
+
+
 ## 17. Как обновлять файлы без скачивания ZIP
 
 Не скачивай архив с GitHub каждый раз. Один раз склонируй репозиторий через Git:
@@ -251,3 +263,35 @@ powershell -ExecutionPolicy Bypass -File scripts/update_and_run.ps1
 ### Как обновления попадают на GitHub
 
 Я делаю изменения в ветке и оформляю PR. Чтобы они появились в основном репозитории на GitHub, PR нужно смерджить. После merge у себя на ПК запускаешь `git pull --ff-only`.
+
+
+## 18. Custom OpenAI-compatible API endpoint
+
+Если ты используешь не официальный `api.openai.com`, а совместимый endpoint/proxy, добавь в `.env`:
+
+```text
+OPENAI_BASE_URL=https://beefjerky.wujiezhidi.moe:32768
+```
+
+Если провайдер требует `/v1` в конце, укажи так:
+
+```text
+OPENAI_BASE_URL=https://beefjerky.wujiezhidi.moe:32768/v1
+```
+
+После изменения `.env` полностью перезапусти бота. Проверить локально можно так:
+
+```powershell
+python scripts/check_openai_key.py
+```
+
+
+## 19. Проверка ADMIN_USER_ID
+
+Если `/remember` пишет, что команда только для админа, отправь в чат:
+
+```text
+/whoami
+```
+
+Бот покажет `user_id`, `chat_id`, текущий `ADMIN_USER_ID` и `is_admin`. Для доступа к `/remember` значение `user_id` должно совпадать с `ADMIN_USER_ID` в `.env`. После изменения `.env` перезапусти бота.

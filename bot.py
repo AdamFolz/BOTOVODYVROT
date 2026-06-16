@@ -26,10 +26,11 @@ logging.basicConfig(
 
 logger = logging.getLogger("predskazbot")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "predskazbot.sqlite3")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "").strip()
+DATABASE_PATH = os.getenv("DATABASE_PATH", "predskazbot.sqlite3").strip()
 MAX_RECENT_MESSAGES = int(os.getenv("MAX_RECENT_MESSAGES", "80"))
 MAX_RECENT_BOT_RESPONSES = int(os.getenv("MAX_RECENT_BOT_RESPONSES", "80"))
 REGENERATION_ATTEMPTS = int(os.getenv("REGENERATION_ATTEMPTS", "3"))
@@ -38,7 +39,7 @@ FUTURE_COOLDOWN_SECONDS = int(os.getenv("FUTURE_COOLDOWN_SECONDS", "20"))
 SUMMARY_COOLDOWN_SECONDS = int(os.getenv("SUMMARY_COOLDOWN_SECONDS", "60"))
 
 db = Database(DATABASE_PATH)
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL or None)
 memory_manager = MemoryManager(db, openai_client, OPENAI_MODEL)
 
 future_rate_limit: dict[tuple[int, int], float] = defaultdict(float)
@@ -133,13 +134,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/profile @username — досье участника\n"
         "/lore — лор конфы\n"
         "/remember текст — сохранить мем/факт (только админ)\n"
-        "/summary — летопись последних событий"
+        "/summary — летопись последних событий\n"
+        "/whoami — показать user_id/chat_id/admin debug"
     )
     await safe_send(update, text)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await start(update, context)
+
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        await safe_send(update, "Не вижу chat/user в update.")
+        return
+
+    text = (
+        "Диагностика:\n"
+        f"user_id: {user.id}\n"
+        f"username: @{user.username or ''}\n"
+        f"chat_id: {chat.id}\n"
+        f"chat_type: {chat.type}\n"
+        f"ADMIN_USER_ID: {ADMIN_USER_ID}\n"
+        f"is_admin: {is_admin(update)}"
+    )
+    await safe_send(update, text)
 
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -487,6 +511,7 @@ def main() -> None:
     app.add_handler(CommandHandler("lore", lore))
     app.add_handler(CommandHandler("remember", remember))
     app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, store_message))
 
     logger.info("PredskazBot v1 started")
