@@ -135,7 +135,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/lore — лор конфы\n"
         "/remember текст — сохранить мем/факт (только админ)\n"
         "/summary — летопись последних событий\n"
-        "/whoami — показать user_id/chat_id/admin debug"
+        "/whoami — показать user_id/chat_id/admin debug\n"
+        "/v2status — проверить, пишет ли v2 storage (только админ)"
     )
     await safe_send(update, text)
 
@@ -166,6 +167,15 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await safe_send(update, text)
 
 
+async def v2status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not is_admin(update):
+        await safe_send(update, "Эта команда доступна только админу.")
+        return
+    await safe_send(update, memory_manager.v2_status_text(chat_id_of(update)))
+
+
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -193,6 +203,17 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to save manual memory")
         await safe_send(update, "Не получилось сохранить память. Попробуй позже.")
         return
+
+    try:
+        memory_manager.record_v2_manual_memory(
+            chat_id=chat_id,
+            author_user_id=user_id,
+            username=username_of(update),
+            display_name=user_display_name(update),
+            text=memory_text,
+        )
+    except Exception:
+        logger.exception("Failed to save manual memory to v2 storage")
 
     await safe_send(update, "Запомнил.")
 
@@ -337,6 +358,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         db.add_bot_response(chat_id, None, "summary", reply)
+        memory_manager.record_v2_bot_response(chat_id=chat_id, user_id=None, command="summary", response_text=reply)
     except Exception:
         logger.exception("Failed to save summary response")
 
@@ -414,6 +436,7 @@ async def future(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         db.add_bot_response(chat_id, user_id, "future", chosen)
+        memory_manager.record_v2_bot_response(chat_id=chat_id, user_id=user_id, command="future", response_text=chosen)
     except Exception:
         logger.exception("Failed to save future response")
 
@@ -460,6 +483,10 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             display_name=display_name,
             text=text,
             mentions=mentions,
+            telegram_message_id=update.message.message_id,
+            telegram_thread_id=getattr(update.message, "message_thread_id", None),
+            chat_title=chat.title or "",
+            chat_type=chat.type,
         )
     except Exception:
         logger.exception("Failed to save incoming message to v2 live event log")
@@ -512,9 +539,10 @@ def main() -> None:
     app.add_handler(CommandHandler("remember", remember))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("v2status", v2status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, store_message))
 
-    logger.info("PredskazBot v1 started")
+    logger.info("PredskazBot started with v2 live storage bridge")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
