@@ -172,13 +172,14 @@ python scripts/query_v2_seed.py --seed exports/v2-seed.jsonl --chat-id <TELEGRAM
 
 ## 14. Включение v2 памяти в боте
 
-По умолчанию бот теперь пытается использовать `exports/v2-seed.jsonl` для `/profile`, `/lore` и LLM-контекста команд. Если seed-файла нет, бот автоматически остаётся на v1 памяти.
+По умолчанию бот пытается использовать `exports/v2-seed.jsonl` и `exports/v2-live-events.jsonl` для `/profile`, `/lore` и LLM-контекста команд. Если v2-файлов нет, бот автоматически остаётся на v1 памяти.
 
-Можно явно задать путь:
+Можно явно задать пути:
 
 ```text
 V2_MEMORY_ENABLED=1
 V2_SEED_PATH=exports/v2-seed.jsonl
+V2_LIVE_EVENTS_PATH=exports/v2-live-events.jsonl
 ```
 
 Если нужно временно отключить v2:
@@ -187,19 +188,46 @@ V2_SEED_PATH=exports/v2-seed.jsonl
 V2_MEMORY_ENABLED=0
 ```
 
+Для полного runtime-перехода включи режим без v1 memory fallback:
+
+```text
+V2_FULL_TRANSITION=1
+V1_MEMORY_FALLBACK_ENABLED=0
+```
+
+В этом режиме `/profile`, `/lore`, `/summary` и `/future` берут memory context из v2 seed/live log, а старый LLM-curator больше не обновляет v1 `user_profiles`, `chat_memory` и `relationships`. SQLite всё ещё используется для служебных вещей: входящих raw messages, cooldown/meta и защиты от повторов ответов бота.
+
 
 ## 15. Live v2 ingestion
 
-При `V2_MEMORY_ENABLED=1` новые сообщения теперь пишутся ещё и в live v2 JSONL-журнал:
+При `V2_MEMORY_ENABLED=1` новые сообщения и ручные `/remember`-заметки пишутся ещё и в live v2 JSONL-журнал:
 
 ```text
 V2_LIVE_EVENTS_PATH=exports/v2-live-events.jsonl
 ```
 
-Это не заменяет будущую PostgreSQL v2 базу, но уже не даёт новым сообщениям оставаться только в v1 SQLite во время перехода.
+Live-записи теперь сохраняют Telegram `message_id`, thread id и ссылку на reply-сообщение, чтобы будущий PostgreSQL importer мог грузить события идемпотентно.
 
 
-## 16. Ошибка OpenAI 401 / invalid API key
+## 16. Импорт v2 seed/live JSONL в PostgreSQL
+
+После применения `docs/v2_schema.sql` можно загрузить v2 JSONL в PostgreSQL:
+
+```bash
+python -m pip install 'psycopg[binary]'
+V2_DATABASE_URL=postgresql://user:password@localhost:5432/predskazbot \
+  python scripts/import_v2_seed.py --seed exports/v2-seed.jsonl
+```
+
+Live-журнал импортируется той же командой:
+
+```bash
+V2_DATABASE_URL=postgresql://user:password@localhost:5432/predskazbot \
+  python scripts/import_v2_seed.py --seed exports/v2-live-events.jsonl
+```
+
+
+## 17. Ошибка OpenAI 401 / invalid API key
 
 Если в консоли видно `Incorrect API key provided` или `401 Unauthorized`, Telegram-бот уже запустился, но OpenAI key в `.env` неверный.
 

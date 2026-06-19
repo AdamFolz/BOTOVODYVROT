@@ -29,17 +29,30 @@ class MemoryManager:
         self.client = openai_client
         self.model = model
         self.v2_enabled = os.getenv("V2_MEMORY_ENABLED", "1") == "1"
+        self.v2_full_transition = os.getenv("V2_FULL_TRANSITION", "0") == "1"
+        self.v1_memory_fallback_enabled = os.getenv("V1_MEMORY_FALLBACK_ENABLED", "1") == "1"
         self.v2_seed_path = Path(os.getenv("V2_SEED_PATH", "exports/v2-seed.jsonl"))
         self.v2_live_events_path = Path(os.getenv("V2_LIVE_EVENTS_PATH", "exports/v2-live-events.jsonl"))
+        self._v2_store_cache: SeedStore | None = None
+        self._v2_store_signature: tuple[tuple[str, int, int], ...] = ()
         self.llm_disabled_reason: str | None = None
 
     def load_v2_seed_store(self) -> SeedStore | None:
         if not self.v2_enabled:
             return None
         paths = [self.v2_seed_path, self.v2_live_events_path]
-        if not any(path.exists() for path in paths):
+        existing_paths = [path for path in paths if path.exists()]
+        if not existing_paths:
             return None
-        return SeedStore.from_jsonl_paths(paths)
+        signature = tuple(
+            (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+            for path in existing_paths
+        )
+        if self._v2_store_cache is not None and signature == self._v2_store_signature:
+            return self._v2_store_cache
+        self._v2_store_cache = SeedStore.from_jsonl_paths(existing_paths)
+        self._v2_store_signature = signature
+        return self._v2_store_cache
 
     def record_v2_message(
         self,
@@ -50,6 +63,9 @@ class MemoryManager:
         display_name: str,
         text: str,
         mentions: list[str],
+        telegram_message_id: int | None = None,
+        telegram_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
     ) -> None:
         if not self.v2_enabled:
             return
@@ -60,6 +76,18 @@ class MemoryManager:
             display_name=display_name,
             text=text,
             mentions=mentions,
+            telegram_message_id=telegram_message_id,
+            telegram_thread_id=telegram_thread_id,
+            reply_to_message_id=reply_to_message_id,
+        )
+
+    def record_v2_manual_memory(self, *, chat_id: int, author_user_id: int, text: str) -> None:
+        if not self.v2_enabled:
+            return
+        LiveEventLog(self.v2_live_events_path).append_manual_memory(
+            telegram_chat_id=chat_id,
+            author_telegram_user_id=author_user_id,
+            text=text,
         )
 
     def build_v2_profile_text(self, chat_id: int, user_id: int) -> str | None:
@@ -81,19 +109,27 @@ class MemoryManager:
         return text
 
     def build_context_for_user(self, chat_id: int, user_id: int, max_recent_messages: int = 80) -> str:
+        recent_bot_responses = self.db.recent_bot_responses(chat_id, 20)
+        blocks: list[str] = []
+
+        v2_profile = self.build_v2_profile_text(chat_id, user_id)
+        if v2_profile:
+            blocks.append("V2 MEMORY CONTEXT:\n" + v2_profile)
+
+        if self.v2_full_transition or not self.v1_memory_fallback_enabled:
+            if not v2_profile:
+                blocks.append("V2 MEMORY CONTEXT: пока пусто — используй только свежие v2-события и текущий запрос.")
+            if recent_bot_responses:
+                old_text = "\n".join(f"- {text}" for text in recent_bot_responses[:15])
+                blocks.append("НЕДАВНИЕ ОТВЕТЫ БОТА, ИХ НЕЛЬЗЯ ПОВТОРЯТЬ:\n" + old_text)
+            return safe_short("\n\n".join(blocks), 12000)
+
         profile = self.db.get_user_profile(chat_id, user_id)
         chat_memory = self.db.get_chat_memory(chat_id)
         recent_messages = self.db.recent_messages(chat_id, max_recent_messages)
         user_messages = self.db.recent_user_messages(chat_id, user_id, 25)
         relationships = self.db.recent_relationships_for_user(chat_id, user_id, 20)
         manual_memories = self.db.recent_manual_memories(chat_id, 10)
-        recent_bot_responses = self.db.recent_bot_responses(chat_id, 20)
-
-        blocks: list[str] = []
-
-        v2_profile = self.build_v2_profile_text(chat_id, user_id)
-        if v2_profile:
-            blocks.append("V2 MEMORY CONTEXT:\n" + v2_profile)
 
         if profile:
             blocks.append(
@@ -164,15 +200,20 @@ class MemoryManager:
         return safe_short("\n\n".join(blocks), 12000)
 
     def build_chat_context(self, chat_id: int, max_recent_messages: int = 100) -> str:
-        chat_memory = self.db.get_chat_memory(chat_id)
-        recent_messages = self.db.recent_messages(chat_id, max_recent_messages)
-        manual_memories = self.db.recent_manual_memories(chat_id, 10)
-
         blocks: list[str] = []
 
         v2_lore = self.build_v2_lore_text(chat_id)
         if v2_lore:
             blocks.append("V2 MEMORY CONTEXT:\n" + v2_lore)
+
+        if self.v2_full_transition or not self.v1_memory_fallback_enabled:
+            if not v2_lore:
+                blocks.append("V2 MEMORY CONTEXT: пока пусто — используй только свежие v2-события и текущий запрос.")
+            return safe_short("\n\n".join(blocks), 12000)
+
+        chat_memory = self.db.get_chat_memory(chat_id)
+        recent_messages = self.db.recent_messages(chat_id, max_recent_messages)
+        manual_memories = self.db.recent_manual_memories(chat_id, 10)
 
         if chat_memory:
             blocks.append(
@@ -202,6 +243,8 @@ class MemoryManager:
         return safe_short("\n\n".join(blocks), 12000)
 
     async def maybe_update_memory(self, chat_id: int) -> None:
+        if self.v2_full_transition or not self.v1_memory_fallback_enabled:
+            return
         if self.llm_disabled_reason:
             return
 

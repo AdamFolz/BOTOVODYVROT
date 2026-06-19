@@ -42,13 +42,19 @@ class LiveEventLog:
         display_name: str,
         text: str,
         mentions: list[str],
+        telegram_message_id: int | None = None,
+        telegram_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
         created_at: str | None = None,
     ) -> None:
         now = utc_now()
         event_created_at = created_at or now
         chat_id = stable_uuid("chat", telegram_chat_id)
         member_id = stable_uuid("member", telegram_user_id)
-        event_id = str(uuid.uuid4())
+        event_id = stable_uuid("message", telegram_chat_id, telegram_message_id or content_hash(f"{telegram_user_id}:{event_created_at}:{text}"))
+        reply_to_event_id = None
+        if reply_to_message_id is not None:
+            reply_to_event_id = stable_uuid("message", telegram_chat_id, reply_to_message_id)
 
         records = [
             seed_row(
@@ -90,9 +96,9 @@ class LiveEventLog:
                     "id": event_id,
                     "chat_id": chat_id,
                     "member_id": member_id,
-                    "telegram_message_id": None,
-                    "telegram_thread_id": None,
-                    "reply_to_event_id": None,
+                    "telegram_message_id": telegram_message_id,
+                    "telegram_thread_id": telegram_thread_id,
+                    "reply_to_event_id": reply_to_event_id,
                     "text": text,
                     "mentions_member_ids": [],
                     "content_hash": content_hash(f"{telegram_chat_id}:{telegram_user_id}:{event_created_at}:{text}"),
@@ -108,6 +114,72 @@ class LiveEventLog:
             ),
         ]
 
+        self._append_records(records)
+
+    def append_manual_memory(
+        self,
+        *,
+        telegram_chat_id: int,
+        author_telegram_user_id: int,
+        text: str,
+        created_at: str | None = None,
+    ) -> None:
+        now = utc_now()
+        event_created_at = created_at or now
+        chat_id = stable_uuid("chat", telegram_chat_id)
+        author_member_id = stable_uuid("member", author_telegram_user_id)
+        memory_id = stable_uuid("manual_memory", telegram_chat_id, author_telegram_user_id, event_created_at, text)
+        self._append_records([
+            seed_row(
+                "chats",
+                {
+                    "id": chat_id,
+                    "telegram_chat_id": telegram_chat_id,
+                    "title": "",
+                    "type": "live_v2",
+                    "memory_policy": {},
+                    "created_at": event_created_at,
+                    "updated_at": now,
+                },
+            ),
+            seed_row(
+                "members",
+                {
+                    "id": author_member_id,
+                    "telegram_user_id": author_telegram_user_id,
+                    "first_seen_at": event_created_at,
+                    "last_seen_at": now,
+                },
+            ),
+            seed_row(
+                "chat_memberships",
+                {
+                    "chat_id": chat_id,
+                    "member_id": author_member_id,
+                    "current_username": "",
+                    "current_display_name": "",
+                    "aliases": [],
+                    "first_seen_at": event_created_at,
+                    "last_seen_at": now,
+                },
+            ),
+            seed_row(
+                "manual_memories_v2",
+                {
+                    "id": memory_id,
+                    "chat_id": chat_id,
+                    "author_member_id": author_member_id,
+                    "claim_id": None,
+                    "text": text,
+                    "memory_type": "note",
+                    "pinned": False,
+                    "expires_at": None,
+                    "created_at": event_created_at,
+                },
+            ),
+        ])
+
+    def _append_records(self, records: list[dict[str, Any]]) -> None:
         with self.path.open("a", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))

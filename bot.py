@@ -194,6 +194,11 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await safe_send(update, "Не получилось сохранить память. Попробуй позже.")
         return
 
+    try:
+        memory_manager.record_v2_manual_memory(chat_id=chat_id, author_user_id=user_id, text=memory_text)
+    except Exception:
+        logger.exception("Failed to save manual memory to v2 live event log")
+
     await safe_send(update, "Запомнил.")
 
 
@@ -239,6 +244,9 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if v2_profile:
         await safe_send(update, v2_profile)
         return
+    if memory_manager.v2_full_transition or not memory_manager.v1_memory_fallback_enabled:
+        await safe_send(update, "Досье v2 пока пустое. Напиши несколько обычных сообщений в чат — они уже пишутся в v2 live log.")
+        return
 
     row = db.get_user_profile(chat_id, target_user_id)
     if not row:
@@ -275,6 +283,9 @@ async def lore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     v2_lore = memory_manager.build_v2_lore_text(chat_id)
     if v2_lore:
         await safe_send(update, v2_lore)
+        return
+    if memory_manager.v2_full_transition or not memory_manager.v1_memory_fallback_enabled:
+        await safe_send(update, "Лор v2 пока пустой. Новые события уже пишутся в v2 live log.")
         return
 
     row = db.get_chat_memory(chat_id)
@@ -452,6 +463,10 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.exception("Failed to save incoming message")
         return
 
+    reply_to_message_id = None
+    if update.message.reply_to_message:
+        reply_to_message_id = update.message.reply_to_message.message_id
+
     try:
         memory_manager.record_v2_message(
             chat_id=chat_id,
@@ -460,6 +475,9 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             display_name=display_name,
             text=text,
             mentions=mentions,
+            telegram_message_id=update.message.message_id,
+            telegram_thread_id=update.message.message_thread_id,
+            reply_to_message_id=reply_to_message_id,
         )
     except Exception:
         logger.exception("Failed to save incoming message to v2 live event log")
@@ -514,7 +532,8 @@ def main() -> None:
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, store_message))
 
-    logger.info("PredskazBot v1 started")
+    mode = "v2-full" if memory_manager.v2_full_transition or not memory_manager.v1_memory_fallback_enabled else "v1+v2-bridge"
+    logger.info("PredskazBot started in %s mode", mode)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
