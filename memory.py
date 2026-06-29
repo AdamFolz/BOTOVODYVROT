@@ -33,6 +33,11 @@ class MemoryManager:
         self.v1_memory_fallback_enabled = os.getenv("V1_MEMORY_FALLBACK_ENABLED", "1") == "1"
         self.v2_seed_path = Path(os.getenv("V2_SEED_PATH", "exports/v2-seed.jsonl"))
         self.v2_live_events_path = Path(os.getenv("V2_LIVE_EVENTS_PATH", "exports/v2-live-events.jsonl"))
+        self.v2_sqlite_path = Path(os.getenv("V2_SQLITE_PATH", "predskazbot_v2.sqlite3"))
+        self.v2_jsonl_bridge_enabled = os.getenv("V2_JSONL_BRIDGE_ENABLED", "0") == "1"
+        self.v2_store: SQLiteV2Store | None = (
+            SQLiteV2Store(self.v2_sqlite_path) if self.v2_enabled else None
+        )
         self._v2_store_cache: SeedStore | None = None
         self._v2_store_signature: tuple[tuple[str, int, int], ...] = ()
         self.llm_disabled_reason: str | None = None
@@ -69,6 +74,8 @@ class MemoryManager:
         telegram_message_id: int | None = None,
         telegram_thread_id: int | None = None,
         reply_to_message_id: int | None = None,
+        chat_title: str = "",
+        chat_type: str = "telegram",
     ) -> None:
         if not self.v2_enabled:
             return
@@ -94,40 +101,62 @@ class MemoryManager:
                 display_name=display_name,
                 text=text,
                 mentions=mentions,
+                telegram_message_id=telegram_message_id,
+                telegram_thread_id=telegram_thread_id,
+                reply_to_message_id=reply_to_message_id,
             )
-
-
-    def record_v2_manual_memory(
-        self,
-        *,
-        chat_id: int,
-        author_user_id: int,
-        username: str,
-        display_name: str,
-        text: str,
-    ) -> None:
-        if not self.v2_enabled or not self.v2_store:
-            return
-        self.v2_store.init()
-        self.v2_store.add_manual_memory(
-            telegram_chat_id=chat_id,
-            author_telegram_user_id=author_user_id,
-            username=username,
-            display_name=display_name,
-            text=text,
-            mentions=mentions,
-            telegram_message_id=telegram_message_id,
-            telegram_thread_id=telegram_thread_id,
-            reply_to_message_id=reply_to_message_id,
-        )
 
     def record_v2_manual_memory(self, *, chat_id: int, author_user_id: int, text: str) -> None:
         if not self.v2_enabled:
             return
-        LiveEventLog(self.v2_live_events_path).append_manual_memory(
+        if self.v2_store:
+            self.v2_store.init()
+            self.v2_store.add_manual_memory(
+                telegram_chat_id=chat_id,
+                author_telegram_user_id=author_user_id,
+                text=text,
+            )
+        if self.v2_jsonl_bridge_enabled:
+            LiveEventLog(self.v2_live_events_path).append_manual_memory(
+                telegram_chat_id=chat_id,
+                author_telegram_user_id=author_user_id,
+                text=text,
+            )
+
+    def record_v2_bot_response(
+        self,
+        *,
+        chat_id: int,
+        user_id: int | None,
+        command: str,
+        response_text: str,
+    ) -> None:
+        if not self.v2_enabled or not self.v2_store:
+            return
+        self.v2_store.init()
+        self.v2_store.add_bot_response(
             telegram_chat_id=chat_id,
-            author_telegram_user_id=author_user_id,
-            text=text,
+            telegram_user_id=user_id,
+            command=command,
+            response_text=response_text,
+        )
+
+    def v2_status_text(self, chat_id: int) -> str:
+        if not self.v2_enabled:
+            return "v2 storage: выключено (V2_MEMORY_ENABLED=0)"
+        if not self.v2_store:
+            return "v2 storage: недоступно"
+        self.v2_store.init()
+        count = self.v2_store.count_message_events(chat_id)
+        bridge = "on" if self.v2_jsonl_bridge_enabled else "off"
+        return (
+            "v2 status:\n"
+            "storage: sqlite\n"
+            f"path: {self.v2_sqlite_path}\n"
+            f"chat_message_events: {count}\n"
+            f"jsonl_bridge: {bridge}\n"
+            f"full_transition: {self.v2_full_transition}\n"
+            f"v1_fallback: {self.v1_memory_fallback_enabled}"
         )
 
     def build_v2_profile_text(self, chat_id: int, user_id: int) -> str | None:

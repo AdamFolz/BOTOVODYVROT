@@ -45,7 +45,7 @@ CONFLICT_TARGETS = {
 }
 
 
-class ImportError(RuntimeError):
+class V2ImportError(RuntimeError):
     """Raised when the v2 import cannot continue safely."""
 
 
@@ -58,7 +58,7 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
 
 def read_seed(path: Path) -> dict[str, list[dict[str, Any]]]:
     if not path.exists():
-        raise ImportError(f"v2 seed file does not exist: {path}")
+        raise V2ImportError(f"v2 seed file does not exist: {path}")
 
     rows_by_entity = {entity: [] for entity in TABLE_ORDER}
     with path.open("r", encoding="utf-8") as handle:
@@ -69,19 +69,19 @@ def read_seed(path: Path) -> dict[str, list[dict[str, Any]]]:
             try:
                 record = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise ImportError(f"Invalid JSON on line {line_number}: {exc}") from exc
+                raise V2ImportError(f"Invalid JSON on line {line_number}: {exc}") from exc
 
             if record.get("record_type") == "v2_seed_metadata":
                 continue
             if record.get("record_type") != "v2_seed_row":
-                raise ImportError(f"Unsupported record_type on line {line_number}: {record.get('record_type')!r}")
+                raise V2ImportError(f"Unsupported record_type on line {line_number}: {record.get('record_type')!r}")
 
             entity = str(record.get("entity", ""))
             data = record.get("data")
             if entity not in rows_by_entity:
-                raise ImportError(f"Unsupported v2 entity on line {line_number}: {entity!r}")
+                raise V2ImportError(f"Unsupported v2 entity on line {line_number}: {entity!r}")
             if not isinstance(data, dict) or not data:
-                raise ImportError(f"Malformed data object on line {line_number}")
+                raise V2ImportError(f"Malformed data object on line {line_number}")
             rows_by_entity[entity].append(data)
     return rows_by_entity
 
@@ -102,11 +102,11 @@ def upsert_sql(table: str, row: dict[str, Any]) -> str:
 
 def import_rows(database_url: str, rows_by_entity: dict[str, list[dict[str, Any]]]) -> dict[str, int]:
     if not database_url:
-        raise ImportError("PostgreSQL DSN is required. Pass --database-url or set V2_DATABASE_URL.")
+        raise V2ImportError("PostgreSQL DSN is required. Pass --database-url or set V2_DATABASE_URL.")
     try:
         import psycopg
     except ModuleNotFoundError as exc:
-        raise ImportError("Install psycopg before importing: python -m pip install 'psycopg[binary]'") from exc
+        raise V2ImportError("Install psycopg before importing: python -m pip install 'psycopg[binary]'") from exc
 
     counts: dict[str, int] = {}
     with psycopg.connect(database_url) as conn:
@@ -125,7 +125,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         rows_by_entity = read_seed(Path(args.seed))
         counts = import_rows(args.database_url, rows_by_entity)
-    except ImportError as exc:
+    except V2ImportError as exc:
         print(f"Import failed: {exc}", file=sys.stderr)
         return 1
 

@@ -490,6 +490,8 @@ async def store_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             telegram_message_id=update.message.message_id,
             telegram_thread_id=update.message.message_thread_id,
             reply_to_message_id=reply_to_message_id,
+            chat_title=chat.title or "",
+            chat_type=str(chat.type),
         )
     except Exception:
         logger.exception("Failed to save incoming message to v2 live event log")

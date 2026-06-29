@@ -230,8 +230,8 @@ class SQLiteV2Store:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, member_id) DO UPDATE SET
-                    current_username=excluded.current_username,
-                    current_display_name=excluded.current_display_name,
+                    current_username=COALESCE(NULLIF(excluded.current_username, ''), chat_memberships.current_username),
+                    current_display_name=COALESCE(NULLIF(excluded.current_display_name, ''), chat_memberships.current_display_name),
                     aliases_json=excluded.aliases_json,
                     last_seen_at=excluded.last_seen_at
                 """,
