@@ -135,7 +135,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/lore — лор конфы\n"
         "/remember текст — сохранить мем/факт (только админ)\n"
         "/summary — летопись последних событий\n"
-        "/whoami — показать user_id/chat_id/admin debug"
+        "/whoami — показать user_id/chat_id/admin debug\n"
+        "/v2status — проверить, пишет ли v2 storage (только админ)"
     )
     await safe_send(update, text)
 
@@ -164,6 +165,15 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"is_admin: {is_admin(update)}"
     )
     await safe_send(update, text)
+
+
+async def v2status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not is_admin(update):
+        await safe_send(update, "Эта команда доступна только админу.")
+        return
+    await safe_send(update, memory_manager.v2_status_text(chat_id_of(update)))
 
 
 async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -348,6 +358,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         db.add_bot_response(chat_id, None, "summary", reply)
+        memory_manager.record_v2_bot_response(chat_id=chat_id, user_id=None, command="summary", response_text=reply)
     except Exception:
         logger.exception("Failed to save summary response")
 
@@ -425,6 +436,7 @@ async def future(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         db.add_bot_response(chat_id, user_id, "future", chosen)
+        memory_manager.record_v2_bot_response(chat_id=chat_id, user_id=user_id, command="future", response_text=chosen)
     except Exception:
         logger.exception("Failed to save future response")
 
@@ -530,6 +542,7 @@ def main() -> None:
     app.add_handler(CommandHandler("remember", remember))
     app.add_handler(CommandHandler("summary", summary))
     app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("v2status", v2status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, store_message))
 
     mode = "v2-full" if memory_manager.v2_full_transition or not memory_manager.v1_memory_fallback_enabled else "v1+v2-bridge"

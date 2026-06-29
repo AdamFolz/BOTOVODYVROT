@@ -323,3 +323,24 @@ python scripts/check_openai_key.py
 ```
 
 Бот покажет `user_id`, `chat_id`, текущий `ADMIN_USER_ID` и `is_admin`. Для доступа к `/remember` значение `user_id` должно совпадать с `ADMIN_USER_ID` в `.env`. После изменения `.env` перезапусти бота.
+
+## V2 live SQLite storage (текущий шаг)
+
+Теперь бот пишет новые сообщения не только в старую v1 SQLite, но и в отдельное v2-хранилище `predskazbot_v2.sqlite3`.
+Это уже не preview JSONL: таблицы `chats`, `members`, `chat_memberships`, `message_events`, `manual_memories_v2`, `memory_claims` и `bot_responses_v2` создаются автоматически при запуске.
+
+Проверь, что v2 включена в `.env`:
+
+```env
+V2_MEMORY_ENABLED=1
+V2_SQLITE_PATH=predskazbot_v2.sqlite3
+V2_JSONL_BRIDGE_ENABLED=0
+```
+
+Запусти бота и напиши в Telegram обычное сообщение, затем админом отправь:
+
+```text
+/v2status
+```
+
+Если всё нормально, бот покажет `storage: sqlite` и количество `chat_message_events` для текущего чата. Это значит, что новые сообщения уже собираются в v2 live storage.
